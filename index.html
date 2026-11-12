@@ -249,6 +249,7 @@ body.land #lab{padding-left:max(14px,var(--sal));padding-right:max(14px,var(--sa
 <video id="cam" playsinline muted></video>
 <input type="file" id="file" accept="image/*" hidden>
 
+<script>addEventListener('error',e=>{const d=document.createElement('div');d.style.cssText='position:fixed;left:8px;right:8px;top:40px;z-index:99;background:#300;color:#fdd;font:12px monospace;padding:8px;border-radius:6px;white-space:pre-wrap';d.textContent='ERR: '+e.message+' @'+(e.lineno||'');document.body.appendChild(d)});addEventListener('unhandledrejection',e=>{const d=document.createElement('div');d.style.cssText='position:fixed;left:8px;right:8px;top:90px;z-index:99;background:#300;color:#fdd;font:12px monospace;padding:8px;border-radius:6px;white-space:pre-wrap';d.textContent='REJ: '+(e.reason&&e.reason.message||e.reason);document.body.appendChild(d)});</script>
 <script>
 (()=>{'use strict';
 const $=s=>document.querySelector(s);
@@ -914,9 +915,9 @@ addEventListener('resize',fit);
 (async()=>{
   makeBrushedNone();
   const d=demoScene();setScene(d,d.width,d.height);makeStamp(Date.now());
-  sdb=await sopen();Object.assign(RAW,await sgetAll());packN();
+  try{sdb=await sopen();Object.assign(RAW,await sgetAll())}catch(e){sdb=null}packN();
   fit();setFormat(S.fmt||0);drawFilms();setLP(S.lens*72,false);sync(true);levRest(true);
-  db=await idb();const raws=await all('raw');if(raws.length!==S.frame){S.frame=raws.length;sync(true)}
+  let raws=[];try{db=await idb();raws=await all('raw')}catch(e){db=null}if(raws.length!==S.frame){S.frame=raws.length;sync(true)}
   requestAnimationFrame(loop);
   toast('Wind · shoot · rewind to develop');
   startCam();
