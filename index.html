@@ -593,7 +593,7 @@ void main(){
   float r2 = dot(pn,pn);
   float zoom = (1.+max(uK,0.))*(1.+uCA)*uZoom;                  // no black borders
   float rad = (.8 + 2.4*uSoft*r2)*uSc;                    // micro-blur radius grows to corners
-  vec2 off = uPx*rad;
+  vec2 off = uPx*rad*uView;                               // canvas px -> frame uv, isotropic
   vec3 cen, rin;
   for(int c=0;c<3;c++){
     float s = 1. + uCA*r2*(c==0 ? 1. : (c==2 ? -1. : 0.));  // R pushed out, B pulled in
@@ -609,7 +609,8 @@ void main(){
   float w = clamp(uSoft*(.25+1.1*r2), 0., 1.);
   vec3 col = mix(cen, blur, w);
   col += (cen-blur)*uSharp*1.5*(1.-.5*w);                 // unsharp (CCD / flash micro-contrast)
-  o = vec4(wr(max(col,0.)), 1.);
+  col = clamp(col, vec3(0.), vec3(8.));                   // no negatives / inf into the half-float chain
+  o = vec4(wr(col), 1.);
 }`;
 
 /* ---------- Pass 2: color science ---------- */
@@ -639,7 +640,8 @@ void main(){
   c *= vec3(1.+.22*uTemp, 1., 1.-.22*uTemp);
   c *= vec3(1.+.08*uTint, 1.-.12*uTint, 1.+.08*uTint);
   c *= exp2(uExp);
-  c = uXT*c;                                              // channel crosstalk
+  c = clamp(uXT*c, vec3(0.), vec3(32.));                  // channel crosstalk, finite
+
   float L = luma(c);
   c = mix(vec3(L), c, uSat);
   c = .18*pow(max(c,0.)/.18, vec3(uContrast*(1.+.25*uFlash)));   // S-curve around middle grey
@@ -647,6 +649,7 @@ void main(){
   float k = uKnee, W = uWhite;
   vec3 hi = k + (W-k)*(1.-exp(-(c-k)/(W-k)));             // C1 shoulder: highlight roll-off
   c = mix(c, hi, step(k, c));
+  c = max(c, vec3(1e-5));
   float td = smoothstep(k*.8, k*2.2, Lc)*uHiDes;          // highlights lose saturation
   c = mix(c, vec3(luma(c)), td);
   vec3 s = toSRGB(c);
@@ -665,7 +668,7 @@ uniform sampler2D uImg; uniform vec2 uPx; uniform float uThr, uKneeB;
 void main(){
   vec3 c = rd(texture(uImg, vUv+uPx*vec2(-1.,-1.)).rgb) + rd(texture(uImg, vUv+uPx*vec2(1.,-1.)).rgb)
          + rd(texture(uImg, vUv+uPx*vec2(-1.,1.)).rgb)  + rd(texture(uImg, vUv+uPx*vec2(1.,1.)).rgb);
-  c *= .25;
+  c = clamp(c*.25, vec3(0.), vec3(16.));
   float br = max(c.r, max(c.g, c.b));
   float soft = clamp(br-uThr+uKneeB, 0., 2.*uKneeB);
   soft = soft*soft/(4.*uKneeB+1e-5);
@@ -699,29 +702,29 @@ void main(){
   base *= 1. + uFlash*.6*max(1.-r2, 0.);                   // flash lights the centre
   vec3 gA = rd(texture(uGA, vUv).rgb);
   vec3 gB = rd(texture(uGB, vUv).rgb);
-  vec3 bloom = (gA*(1.-uBloomR) + gB*uBloomR*1.4)*uBloom*2.;
+  vec3 bloom = (gA*(1.-uBloomR) + gB*uBloomR*1.1)*uBloom*1.3;
   vec3 c = base + bloom*(1.-clamp(base,0.,1.));            // soft screen
   // halation: wide red/orange bleed of the blurred highlights
   vec3 hw = rd(texture(uGB, vUv+vec2( uHalR,0.)*uPxB*3.).rgb) + rd(texture(uGB, vUv+vec2(-uHalR,0.)*uPxB*3.).rgb)
           + rd(texture(uGB, vUv+vec2(0., uHalR)*uPxB*3.).rgb) + rd(texture(uGB, vUv+vec2(0.,-uHalR)*uPxB*3.).rgb);
-  float hl = dot(hw*.25*.5 + gB*.25 + gA*.45, vec3(.3,.6,.1))*2.6;
+  float hl = dot(hw*.25*.4 + gB*.2 + gA*.4, vec3(.3,.6,.1))*1.7;
   c += uHalCol*hl*uHal*(1.-.35*smoothstep(.7,1.,luma(base)));
   float kv = uVig + uFlash*.9;                              // cos^4(theta) = 1/(1+k^2 r^2)^2, linear light
   float q = 1.+kv*kv*r2; c *= 1./(q*q);
-  vec3 s = toSRGB(c);
+  vec3 s = toSRGB(clamp(c, vec3(0.), vec3(16.)));
   // film grain, parabolic in luminance (max mids/shadows, min deep black + clipped highlights)
-  float l = luma(s);
-  float amp = pow(4.*l*(1.-l)+.001, .6)*smoothstep(0., .07, l);
-  vec2 gp = vUv*uRes/(uGrainSize*uSc);
+  float l = clamp(luma(s), 0., 1.);                          // bloom/halation can push s above 1: pow(negative) was NaN -> black pixels
+  float amp = pow(max(4.*l*(1.-l), 0.)+.001, .6)*smoothstep(0., .12, l);
+  vec2 gp = vUv*uRes/(uGrainSize*uSc*.6);              // finer cluster
   float n0 = gauss(gp, uSeed);
-  vec3 ng = mix(vec3(n0), vec3(n0, gauss(gp+31.1, uSeed+2.3), gauss(gp+77.7, uSeed+4.1)), uGrainChroma);
-  s += ng*uGrain*amp;
+  vec3 ng = mix(vec3(n0), vec3(n0, gauss(gp+31.1, uSeed+2.3), gauss(gp+77.7, uSeed+4.1)), uGrainChroma*.2);   // near-monochrome
+  s += ng*uGrain*.8*amp;
   // digital chroma noise in shadows (CCD)
   vec2 fc = gl_FragCoord.xy;
   vec3 cn = vec3(hash12(fc+uSeed*11.), hash12(fc*1.37+uSeed*5.+3.), hash12(fc*.73+uSeed*7.+9.))
           + vec3(hash12(fc+uSeed*3.+50.), hash12(fc*1.1+uSeed*2.+70.), hash12(fc*.9+uSeed*9.+90.)) - 1.;
   s += cn*1.7*uChroma*(1.-smoothstep(0., .5, l));
-  o = vec4(s, 1.);
+  o = vec4(clamp(s, 0., 1.), 1.);
 }`;
 
 /* ---------- Pass 5: overlays ---------- */
@@ -785,7 +788,7 @@ float glyphSDF(vec2 p, int code){
   return d;
 }
 void main(){
-  vec3 s = texture(uBase, vUv).rgb;
+  vec3 s = clamp(texture(uBase, vUv).rgb, 0., 1.);
   vec2 fuv = (vUv-.5-vec2(0.,uShift))*uView+.5;
   // light leak (screen)
   if(uLeak>.001){ vec3 lk = leak(fuv)*uLeak; s = 1.-(1.-s)*(1.-clamp(lk,0.,1.)); }
@@ -793,10 +796,10 @@ void main(){
   if(uDust>.001){
     vec2 uv = fuv*vec2(uOutA,1.);
     float lt=0., dk=0.;
-    dustLayer(uv, 70., .10, .05, .17, lt, dk);
-    dustLayer(uv, 30., .055, .06, .22, lt, dk);
-    dustLayer(uv, 11., .022, .08, .24, lt, dk);
-    hairLayer(uv, 6.5, .035, lt, dk);
+    dustLayer(uv, 70., .033, .017, .057, lt, dk);
+    dustLayer(uv, 30., .018, .02, .073, lt, dk);
+    dustLayer(uv, 11., .007, .027, .08, lt, dk);
+    hairLayer(uv, 6.5, .012, lt, dk);
     float sx = floor(fuv.x*600.);
     if(hash12(vec2(sx, uSeed2)) < .004*uDust){
       float xf = fract(fuv.x*600.);
@@ -996,8 +999,8 @@ class FilmEngine {
     const view = S.view || [1,1], shift = S.shift || 0, fW = W/view[0], fH = H/view[1];
     gl.disable(gl.BLEND);
     // Pass 1
-    this._pass(this.pr.optics, T.optics, { uSrcA:this.srcA, uOutA:A, uK:P.distortion, uCA:P.aberration, uSoft:P.softness,
-      uSharp:P.sharpen + fl*.5, uSc:sc, uPx:[1/W, 1/H], uView:view, uShift:shift, uZoom:P.zoom||1 }, { uSrc:this.srcTex });
+    this._pass(this.pr.optics, T.optics, { uSrcA:this.srcA, uOutA:A, uK:P.distortion, uCA:P.aberration, uSoft:P.softness*.25,                                   // optical softness: 4x subtler
+      uSharp:P.sharpen + .18 + fl*.5, uSc:sc, uPx:[1/W, 1/H], uView:view, uShift:shift, uZoom:P.zoom||1 }, { uSrc:this.srcTex });
     // Pass 2
     const x = P.xt, xt = new Float32Array([x[0],x[3],x[6], x[1],x[4],x[7], x[2],x[5],x[8]]);
     const lut = this.lutInfo && this.lutTex;
@@ -1008,7 +1011,7 @@ class FilmEngine {
       { uImg:T.optics.tex, uLut: lut ? this.lutTex : T.optics.tex });
     // Pass 3: bright (1/2) -> gauss 1/4 (A) -> gauss 1/8 (B)
     const br = P.bloomRadius || 1;
-    this._pass(this.pr.bright, T.bright, { uPx:[1/T.color.w, 1/T.color.h], uThr:P.bloomThreshold, uKneeB:P.bloomKnee }, { uImg:T.color.tex });
+    this._pass(this.pr.bright, T.bright, { uPx:[1/T.color.w, 1/T.color.h], uThr:P.bloomThreshold + .08, uKneeB:P.bloomKnee }, { uImg:T.color.tex });
     this._pass(this.pr.blur, T.a1, { uDir:[1.5*br/T.bright.w, 0] }, { uImg:T.bright.tex });
     this._pass(this.pr.blur, T.a2, { uDir:[0, 1.5*br/T.a1.h] }, { uImg:T.a1.tex });
     this._pass(this.pr.blur, T.b1, { uDir:[2*br/T.a2.w, 0] }, { uImg:T.a2.tex });
